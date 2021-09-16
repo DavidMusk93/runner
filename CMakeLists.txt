@@ -5,6 +5,7 @@ project(runner)
 set(CMAKE_C_FLAGS "-g -Wall")
 
 aux_source_directory(. SRCS)
+add_definitions(-DNDEBUG=1)
 
 add_executable(${PROJECT_NAME} ${SRCS})
 target_link_libraries(${PROJECT_NAME} pthread)

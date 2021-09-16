@@ -9,8 +9,13 @@ enum{
 };
 
 typedef int event_fd;
+typedef int timer_fd;
 
 event_fd event_fd_new(int count,int flags);
 void event_fd_release(event_fd fd);
 void event_fd_notify(event_fd fd,unsigned long e);
 unsigned long event_fd_wait(event_fd fd);
+
+timer_fd timer_fd_new(int flags);
+void timer_fd_release(timer_fd fd);
+int timer_fd_reset(timer_fd fd,unsigned ms,int repeated);

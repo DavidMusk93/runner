@@ -21,6 +21,12 @@ const char*now_string(char buf[DATETIME_BUF_LEN],datetime_format format){
     return (format?: default_datetime_format)(p,(int)ts.tv_sec,(int)ts.tv_nsec/1000);
 }
 
+long now_ms(){
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC,&ts);
+    return (long)ts.tv_sec*1000+(long)ts.tv_nsec/1000000;
+}
+
 int __pid(){
     static int pid;
     if(!pid){
