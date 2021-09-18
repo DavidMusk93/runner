@@ -12,6 +12,7 @@
 #include "macro.h"
 #include "misc.h"
 #include "heap.h"
+#include "array.h"
 
 #define __relax ({__asm__ volatile("pause":::"memory");})
 #if __USE_GNU
@@ -48,111 +49,6 @@ pthread_mutex_lock(__lock)
 #endif
 #define DEFER_RUNNER_DURATION_MIN 10U /*ms*/
 
-typedef struct{
-    void*fixed_array[4096];
-    void**a;
-    unsigned i,n;
-    compare cmp;
-}sorted_array;
-
-__internal sorted_array*sorted_array_new(compare cmp){
-    sorted_array*o= malloc(sizeof(*o));
-    o->a=&o->fixed_array[0];
-    o->i=0;
-    o->n= dimension_of(o->fixed_array);
-    o->cmp=cmp;
-    return o;
-}
-
-__internal void sorted_array_release(sorted_array*o){
-    if(o){
-        if(o->a!=&o->fixed_array[0])
-            free(o->a);
-        free(o);
-    }
-}
-
-__internal void sorted_array_expand(sorted_array*o){
-    unsigned i;
-    void**a=&o->fixed_array[0];
-    o->a= realloc(o->a==a?0:o->a,o->n*2);
-    if(o->n== dimension_of(o->fixed_array)){
-        for(i=0;i<o->n;i++){
-            o->a[i]=a[i];
-        }
-    }
-    o->n*=2;
-}
-
-__internal void sorted_array_put(sorted_array*o,void*e){
-    unsigned i=o->i;
-    if(i==o->n)
-        sorted_array_expand(o);
-    o->a[o->i++]=e;
-    // bubble sort
-    for(;i>0;i--){
-        if(o->cmp(o->a[i],o->a[i-1])>=0)
-            break;
-        __swap(o->a[i],o->a[i-1]);
-    }
-}
-
-__internal unsigned sorted_array_search(sorted_array*o,void*e){
-    unsigned i,j,m; /*(i,j]*/
-    int x;
-    i=0,j=o->i,m=i+(j-i)/2;
-    // binary search
-    for(;;m=i+(j-i)/2){
-        if(i==m)
-            break;
-        x=o->cmp(e,o->a[m]);
-        if(x==0){
-            break;
-        }else if(x<0){
-            j=m;
-        }else{
-            i=m+1;
-        }
-    }
-    return m;
-}
-
-__internal void*sorted_array_erase(sorted_array*o,void*e){
-    if(!o->i)
-        return 0;
-    unsigned i=sorted_array_search(o,e);
-    if(o->cmp(e,o->a[i])!=0)
-        return 0; /*not found*/
-    for(;i+1<o->i;i++){
-        __swap(o->a[i],o->a[i+1]);
-    }
-    o->i--;
-    return e;
-}
-
-__internal void array_init(sorted_array*o){
-    o->a=&o->fixed_array[0];
-    o->i=0;
-    o->n= dimension_of(o->fixed_array);
-    o->cmp=0;
-}
-
-__internal void array_release(sorted_array*o){
-    if(o&&o->a!=&o->fixed_array[0]){
-        free(o->a);
-    }
-}
-
-__internal void array_push(sorted_array*o,void*e){
-    if(o->i==o->n)
-        sorted_array_expand(o);
-    o->a[o->i++]=e;
-}
-
-__internal void array_rewind(sorted_array*o){
-    o->i=0;
-}
-
 typedef void*(*runnable)(void*);
 
 typedef struct{
@@ -161,6 +57,27 @@ typedef struct{
     runnable run;
     pthread_t tid;
 }base_runner;
+
+struct runner{
+    base_runner base;
+    pthread_mutex_t mutex;
+    queue tasks;
+    int id;
+    int last_id;
+    unsigned long done;
+#if RUNNER_WAITER_MAX
+    event_fd hub;
+#endif
+};
+
+struct defer_runner{
+    base_runner base;
+    pthread_mutex_t mutex,mutex2;
+    struct heap*tasks;
+    sorted_array*array;
+    timer_fd fd;
+    int id;
+};
 
 __internal void base_runner_init(base_runner*o,runnable run){
     o->state=STATE_NOTHINGNESS;
@@ -227,27 +144,6 @@ void defer_task_cancel(defer_task*o,struct defer_runner*r){
         o->id=-1;
     }
 }
-
-struct runner{
-    base_runner base;
-    pthread_mutex_t mutex;
-    queue tasks;
-    int id;
-    int last_id;
-    unsigned long done;
-#if RUNNER_WAITER_MAX
-    event_fd hub;
-#endif
-};
-
-struct defer_runner{
-    base_runner base;
-    pthread_mutex_t mutex,mutex2;
-    struct heap*tasks;
-    sorted_array*array;
-    timer_fd fd;
-    int id;
-};
 
 __internal void*runner_loop(void*arg){
     struct runner*o=arg;
@@ -366,7 +262,7 @@ __internal void mutex_unlock(void*arg){
 
 __internal void*defer_runner_loop(void*arg){
     struct defer_runner*o=arg;
-    sorted_array ready_tasks;
+    array ready_tasks;
     array_init(&ready_tasks);
     struct pollfd pfds[2];
     pfds[0]=(struct pollfd){.fd=o->base.fd,.events=POLLIN};
@@ -436,7 +332,7 @@ struct defer_runner*defer_runner_new(){
     base_runner_init((base_runner*)o,&defer_runner_loop);
     pthread_mutex_init(&o->mutex,0);
     pthread_mutex_init(&o->mutex2,0);
-    o->tasks= heap_new(dimension_of(o->array->fixed_array),&compare_ts);
+    o->tasks= heap_new(ARRAY_FIXED_SIZE,&compare_ts);
     o->array= sorted_array_new(&compare_pointer);
     o->fd= timer_fd_new(O_NONBLOCK);
     o->id=RUNNER_ID_MIN;

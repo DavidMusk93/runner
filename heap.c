@@ -31,6 +31,7 @@ void heap_release(struct heap*o){
 //    }
 //}
 
+#define __swap SWAP_POINTER
 #define __a(i) o->a[i]
 static void __up(struct heap*o,unsigned i){
     unsigned j;

@@ -19,11 +19,15 @@ void baz(void*arg){
     log("repeated job");
 }
 
+#define RUNNER_TEST 1
+#define DEFER_RUNNER_TEST 1
+
 MAIN(){
     ALWAYS_FLUSH_OUTPUT();
 #define vp_cast(x) (void*)(unsigned long)(x)
     int i;
-#define TASK_SIZE 20
+#if RUNNER_TEST
+# define TASK_SIZE 20
     // runner test
     task tasks[TASK_SIZE+1];
     struct runner*r=runner_new();
@@ -37,9 +41,10 @@ MAIN(){
     task_wait(&tasks[TASK_SIZE],r);
     runner_stop(r);
     runner_release(r);
-
+#endif
+#if DEFER_RUNNER_TEST
     // defer_runner test
-#define DEFER_TASK_SIZE 2
+# define DEFER_TASK_SIZE 2
     struct defer_runner*r2=defer_runner_new();
     defer_runner_start(r2);
     defer_task t2[DEFER_TASK_SIZE+1];
@@ -54,5 +59,6 @@ MAIN(){
     nap(2000);
     defer_runner_stop(r2);
     defer_runner_release(r2);
+#endif
     return 0;
 }
