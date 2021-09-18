@@ -93,7 +93,7 @@ __internal void sorted_array_put(sorted_array*o,void*e){
     for(;i>0;i--){
         if(o->cmp(o->a[i],o->a[i-1])>=0)
             break;
-        __swap(o->a[i],o->a[i-i]);
+        __swap(o->a[i],o->a[i-1]);
     }
 }
 
@@ -130,14 +130,14 @@ __internal void*sorted_array_erase(sorted_array*o,void*e){
     return e;
 }
 
-void array_init(sorted_array*o){
+__internal void array_init(sorted_array*o){
     o->a=&o->fixed_array[0];
     o->i=0;
     o->n= dimension_of(o->fixed_array);
     o->cmp=0;
 }
 
-void array_release(sorted_array*o){
+__internal void array_release(sorted_array*o){
     if(o&&o->a!=&o->fixed_array[0]){
         free(o->a);
     }
