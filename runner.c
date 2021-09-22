@@ -13,6 +13,7 @@
 #include "misc.h"
 #include "heap.h"
 #include "array.h"
+#include "queue.h"
 
 #define __relax ({__asm__ volatile("pause":::"memory");})
 #if __USE_GNU
@@ -50,6 +51,24 @@ pthread_mutex_lock(__lock)
 #define DEFER_RUNNER_DURATION_MIN 10U /*ms*/
 
 typedef void*(*runnable)(void*);
+typedef void (*job)(void*);
+
+typedef struct task{
+    job fn;
+    void*arg;
+    int wait;
+    int id;
+    queue q;
+}task;
+
+typedef struct defer_task{
+    job fn;
+    void*arg;
+    long run_at;
+    int id;
+    unsigned duration:31;
+    int repeated:1;
+}defer_task;
 
 typedef struct{
     unsigned state;
@@ -58,9 +77,9 @@ typedef struct{
     pthread_t tid;
 }base_runner;
 
-struct runner{
+typedef struct runner{
     base_runner base;
-    pthread_mutex_t mutex;
+    pthread_mutex_t mutex,mutex2;
     queue tasks;
     int id;
     int last_id;
@@ -68,26 +87,32 @@ struct runner{
 #if RUNNER_WAITER_MAX
     event_fd hub;
 #endif
-};
+    obj_pool*pool;
+}runner;
 
-struct defer_runner{
+typedef struct defer_runner{
     base_runner base;
-    pthread_mutex_t mutex,mutex2;
+    pthread_mutex_t mutex,mutex2,mutex3;
     struct heap*tasks;
     sorted_array*array;
     timer_fd fd;
     int id;
-};
+    obj_pool*pool;
+}defer_runner;
 
+/* private APIs */
 __internal void base_runner_init(base_runner*o,runnable run){
     o->state=STATE_NOTHINGNESS;
     o->run=run;
 }
 
+__internal void base_runner_stop(base_runner*);
 __internal void base_runner_release(base_runner*o){
     if(o->state&STATE_INITIALIZED){
+        base_runner_stop(o);
         pthread_join(o->tid,0);
         event_fd_release(o->fd);
+        o->state=STATE_NOTHINGNESS;
     }
 }
 
@@ -106,51 +131,34 @@ __internal void base_runner_onstart(base_runner*o){
 }
 
 __internal void base_runner_stop(base_runner*o){
-    if(!(o->state&STATE_TERMINATED)){
+    if((o->state&STATE_INITIALIZED)&&!(o->state&STATE_TERMINATED)){
         event_fd_notify(o->fd,EVENT_QUIT);
         o->state|=STATE_TERMINATED;
         __write_barrier;
     }
 }
 
-void task_init(task*o,job fn,void*arg,int wait){
-    o->fn=fn;
-    o->arg=arg;
-    o->wait=wait;
-    o->id=-1;
+__internal void mutex_unlock(void*arg){
+    pthread_mutex_t*mutex=*(pthread_mutex_t**)arg;
+    pthread_mutex_unlock(mutex);
 }
 
-__internal void runner_wait(struct runner*o,int id);
-void task_wait(task*o,struct runner*r){
-    if(o->id>=RUNNER_ID_MIN&&o->id<RUNNER_ID_MAX){
-        runner_wait(r,o->id);
-        o->id=-1; /*make sure wait once*/
-    }
+__internal int compare_ts(const void*l,const void*r){ /*minimal heap*/
+    long a,b;
+    a=((defer_task*)l)->run_at,b=((defer_task*)r)->run_at;
+    return a==b?0:(a<b?1:-1);
 }
 
-void defer_task_init(defer_task*o,job fn,void*arg,unsigned duration,int repeated){
-    o->fn=fn;
-    o->arg=arg;
-    o->id=-1;
-    o->run_at=0;
-    o->duration=duration;
-    o->repeated=repeated!=0;
-}
-
-__internal void defer_runner_cancel(struct defer_runner*o,void*e);
-void defer_task_cancel(defer_task*o,struct defer_runner*r){
-    if(o->id>=RUNNER_ID_MIN&&o->id<RUNNER_ID_MAX){
-        defer_runner_cancel(r,o);
-        o->id=-1;
-    }
+__internal int compare_id(const void*l,const void*r){ /*ascend*/
+    return ((const defer_task*)l)->id-((const defer_task*)r)->id;
 }
 
 __internal void*runner_loop(void*arg){
-    struct runner*o=arg;
+    runner*o=arg;
     struct pollfd pfd={.fd=o->base.fd,.events=POLLIN};
     unsigned long n;
     int rc;
-    queue tasks,*p;
+    queue ready_tasks,*p;
     task*t;
     base_runner_onstart(&o->base);
     infinite_loop(){
@@ -158,13 +166,13 @@ __internal void*runner_loop(void*arg){
         n= event_fd_wait(o->base.fd);
         if(n>=EVENT_QUIT)
             break;
-        queue_init(&tasks);
+        queue_init(&ready_tasks);
         pthread_mutex_lock(&o->mutex);
         while(n--){
-            queue_move(&o->tasks,&tasks,p);
+            queue_move(&o->tasks,&ready_tasks,p);
         }
         pthread_mutex_unlock(&o->mutex);
-        queue_foreach(&tasks,p){
+        queue_foreach(&ready_tasks,p){
             GOTO_WORK(o->base.state);
             t= queue_data(p,task,q);
             t->fn(t->arg);
@@ -176,92 +184,31 @@ __internal void*runner_loop(void*arg){
                 event_fd_notify(o->hub,EVENT_MSG); /*notify task done*/
 #endif
             }
+            {
+                LOCK_GUARD(o->mutex2);
+                obj_pool_put(o->pool,t);
+            }
             GOTO_IDLE(o->base.state);
         }
     }
     return arg;
 }
 
-struct runner*runner_new(){
-    struct runner*o= malloc(sizeof(*o));
-    base_runner_init(&o->base,&runner_loop);
-    pthread_mutex_init(&o->mutex,0);
-    queue_init(&o->tasks);
-    o->id=RUNNER_ID_MIN;
-    o->last_id=-1;
-    o->done=0;
-#if RUNNER_WAITER_MAX
-    o->hub= event_fd_new(0,EFD_SEMAPHORE);
-#endif
-    return o;
-}
-
-void runner_release(struct runner*o){
-    base_runner_release(&o->base);
-#if RUNNER_WAITER_MAX
-    event_fd_release(o->hub);
-#endif
-    pthread_mutex_destroy(&o->mutex);
-    free(o);
-}
-
-void runner_start(struct runner*o){
-    base_runner_start((base_runner*)o);
-}
-
-void runner_stop(struct runner*o){
-    base_runner_stop((base_runner*)o);
-#if RUNNER_WAITER_MAX
-    event_fd_notify(o->hub,EVENT_QUIT);
-#endif
-}
-
-int runner_post(struct runner*o,task*t){
-    if(o->base.state&STATE_TERMINATED){
-        return -2;
-    }
-    if(t->fn){
-        pthread_mutex_lock(&o->mutex);
-        if(t->wait){
-            if(o->id==RUNNER_ID_MAX)
-                o->id=RUNNER_ID_MIN;
-            t->id=o->id++; /*ID is valuable*/
+__internal int defer_runner_repost(defer_runner*o,defer_task*t){
+    if(t->id!=-1){
+        {
+            t->run_at=__ms()+t->duration;
+            LOCK_GUARD(o->mutex);
+            heap_push(o->tasks,t);
         }
-        queue_push(&o->tasks,&t->q);
-        pthread_mutex_unlock(&o->mutex);
-        event_fd_notify(o->base.fd,EVENT_MSG); /*notify task arrival*/
+        event_fd_notify(o->base.fd,EVENT_MSG);
         return t->id;
     }
-    return -1;
-}
-
-__internal void runner_wait(struct runner*o,int id){
-    unsigned long m=1L<<(id%SLOT_SIZE);
-    for(;!(__read_barrier,o->base.state&STATE_TERMINATED);){
-        if(id>=o->last_id&&id<=o->last_id+RUNNER_WAITER_MAX){
-#if RUNNER_WAITER_MAX
-            (void) event_fd_wait(o->hub);
-#endif
-            if(__read_barrier,(o->base.state&STATE_TERMINATED)||(o->done&m)){
-                o->done&=~m;
-                __write_barrier;
-                break;
-            }
-#if RUNNER_WAITER_MAX
-            event_fd_notify(o->hub,EVENT_MSG); /*false consume, supply one*/
-#endif
-        }
-        __relax;
-    }
-}
-
-__internal void mutex_unlock(void*arg){
-    pthread_mutex_t*mutex=*(pthread_mutex_t**)arg;
-    pthread_mutex_unlock(mutex);
+    return -1; /*already canceled*/
 }
 
 __internal void*defer_runner_loop(void*arg){
-    struct defer_runner*o=arg;
+    defer_runner*o=arg;
     array ready_tasks;
     array_init(&ready_tasks);
     struct pollfd pfds[2];
@@ -274,7 +221,6 @@ __internal void*defer_runner_loop(void*arg){
     int rc;
     base_runner_onstart(&o->base);
     infinite_loop(){
-        n=0;
         array_rewind(&ready_tasks);
         __poll(rc,poll,pfds,2,-1);
         if(rc>0&&(pfds[0].revents&POLLIN)){ /*new task arrival*/
@@ -300,14 +246,19 @@ __internal void*defer_runner_loop(void*arg){
         }
         for(i=0;i<ready_tasks.i;i++){
             t=ready_tasks.a[i];
-            {
-                LOCK_GUARD(o->mutex2);
-                if(!sorted_array_erase(o->array,t)) /*canceled*/
+            if(t->id!=-1){
+                t->fn(t->arg); /*may take a long time*/
+                if(t->repeated && defer_runner_repost(o,t)!=-1){
                     continue;
+                }
             }
-            t->fn(t->arg); /*may take a long time*/
-            if(t->repeated){
-                defer_runner_post(o,t); /*repost repeated task*/
+            if(t->id!=-1){
+                LOCK_GUARD(o->mutex2);
+                sorted_array_erase(o->array,t);
+            }
+            {
+                LOCK_GUARD(o->mutex3);
+                obj_pool_put(o->pool,t);
             }
         }
     }
@@ -315,52 +266,141 @@ __internal void*defer_runner_loop(void*arg){
     return arg;
 }
 
-__internal int compare_ts(const void*l,const void*r){ /*minimal heap*/
-    long a,b;
-    a=((defer_task*)l)->run_at,b=((defer_task*)r)->run_at;
-    return a==b?0:(a<b?1:-1);
-}
-
-__internal int compare_pointer(const void*l,const void*r){ /*ascend*/
-    long a,b;
-    a=(long)l,b=(long)r;
-    return a==b?0:(a<b?-1:1);
-}
-
-struct defer_runner*defer_runner_new(){
-    struct defer_runner*o= malloc(sizeof(*o));
-    base_runner_init((base_runner*)o,&defer_runner_loop);
+/* public APIs */
+runner*runner_new(){
+    runner*o= malloc(sizeof(*o));
+    base_runner_init(&o->base,&runner_loop);
     pthread_mutex_init(&o->mutex,0);
     pthread_mutex_init(&o->mutex2,0);
-    o->tasks= heap_new(ARRAY_FIXED_SIZE,&compare_ts);
-    o->array= sorted_array_new(&compare_pointer);
-    o->fd= timer_fd_new(O_NONBLOCK);
+    queue_init(&o->tasks);
     o->id=RUNNER_ID_MIN;
+    o->last_id=-1;
+    o->done=0;
+#if RUNNER_WAITER_MAX
+    o->hub= event_fd_new(0,EFD_SEMAPHORE);
+#endif
+    o->pool= obj_pool_new(sizeof(task),256);
     return o;
 }
 
-void defer_runner_release(struct defer_runner*o){
+void runner_release(runner*o){
+    base_runner_release(&o->base);
+    obj_pool_release(o->pool);
+#if RUNNER_WAITER_MAX
+    event_fd_release(o->hub);
+#endif
+    pthread_mutex_destroy(&o->mutex2);
+    pthread_mutex_destroy(&o->mutex);
+    free(o);
+}
+
+void runner_start(runner*o){
+    base_runner_start((base_runner*)o);
+}
+
+void runner_stop(runner*o){
+    base_runner_stop((base_runner*)o);
+#if RUNNER_WAITER_MAX
+    event_fd_notify(o->hub,EVENT_QUIT);
+#endif
+}
+
+int runner_post(runner*o,void(*fn)(void*),void*arg,int wait){
+    if(o->base.state&STATE_TERMINATED){
+        return -2;
+    }
+    if(fn){
+        task*t;{
+            LOCK_GUARD(o->mutex2);
+            t= obj_pool_get(o->pool);
+            t->fn=fn;
+            t->arg=arg;
+            t->wait=wait;
+            t->id=-1;
+        }
+        pthread_mutex_lock(&o->mutex);
+        if(wait){
+            if(o->id==RUNNER_ID_MAX)
+                o->id=RUNNER_ID_MIN;
+            t->id=o->id++; /*ID is valuable*/
+        }
+        queue_push(&o->tasks,&t->q);
+        pthread_mutex_unlock(&o->mutex);
+        event_fd_notify(o->base.fd,EVENT_MSG); /*notify task arrival*/
+        return t->id;
+    }
+    return -1;
+}
+
+void runner_wait(runner*o,int id){
+    if(id<RUNNER_ID_MIN||id>=RUNNER_ID_MAX){
+        return;
+    }
+    unsigned long m=1L<<(id%SLOT_SIZE);
+    for(;!(__read_barrier,o->base.state&STATE_TERMINATED);){
+        if(id>=o->last_id&&id<=o->last_id+RUNNER_WAITER_MAX){
+#if RUNNER_WAITER_MAX
+            (void) event_fd_wait(o->hub);
+#endif
+            if(__read_barrier,(o->base.state&STATE_TERMINATED)||(o->done&m)){
+                o->done&=~m;
+                __write_barrier;
+                break;
+            }
+#if RUNNER_WAITER_MAX
+            event_fd_notify(o->hub,EVENT_MSG); /*false consume, supply one*/
+#endif
+        }
+        __relax;
+    }
+}
+
+defer_runner*defer_runner_new(){
+    defer_runner*o= malloc(sizeof(*o));
+    base_runner_init((base_runner*)o,&defer_runner_loop);
+    pthread_mutex_init(&o->mutex,0);
+    pthread_mutex_init(&o->mutex2,0);
+    pthread_mutex_init(&o->mutex3,0);
+    o->tasks= heap_new(ARRAY_FIXED_SIZE,&compare_ts);
+    o->array= sorted_array_new(&compare_id);
+    o->fd= timer_fd_new(O_NONBLOCK);
+    o->id=RUNNER_ID_MIN;
+    o->pool= obj_pool_new(sizeof(defer_task),256);
+    return o;
+}
+
+void defer_runner_release(defer_runner*o){
     if(o){
         base_runner_release((base_runner*)o);
+        obj_pool_release(o->pool);
         timer_fd_release(o->fd);
         sorted_array_release(o->array);
         heap_release(o->tasks);
+        pthread_mutex_destroy(&o->mutex3);
         pthread_mutex_destroy(&o->mutex2);
         pthread_mutex_destroy(&o->mutex);
         free(o);
     }
 }
 
-void defer_runner_start(struct defer_runner*o){
+void defer_runner_start(defer_runner*o){
     base_runner_start((base_runner*)o);
 }
 
-void defer_runner_stop(struct defer_runner*o){
+void defer_runner_stop(defer_runner*o){
     base_runner_stop((base_runner*)o);
 }
 
-int defer_runner_post(struct defer_runner*o,defer_task*t){
-    if(t&&t->fn&&t->duration>=DEFER_RUNNER_DURATION_MIN){
+int defer_runner_post(defer_runner*o,void(*fn)(void*),void*arg,unsigned duration,int repeated){
+    if(fn&&duration>=DEFER_RUNNER_DURATION_MIN){
+        defer_task*t;{
+            LOCK_GUARD(o->mutex3);
+            t= obj_pool_get(o->pool);
+        }
+        t->fn=fn;
+        t->arg=arg;
+        t->duration=duration;
+        t->repeated=repeated!=0;
         t->run_at=__ms()+t->duration;
         {
             LOCK_GUARD(o->mutex);
@@ -379,7 +419,14 @@ int defer_runner_post(struct defer_runner*o,defer_task*t){
     return -1;
 }
 
-__internal void defer_runner_cancel(struct defer_runner*o,void*e){
+void defer_runner_cancel(defer_runner*o,int id){
+    if(id<RUNNER_ID_MIN||id>=RUNNER_ID_MAX){
+        return;
+    }
+    defer_task t,*p;
+    t.id=id;
     LOCK_GUARD(o->mutex2);
-    sorted_array_erase(o->array,e);
+    p=sorted_array_erase(o->array,&t);
+    if(p)
+        p->id=-1;
 }

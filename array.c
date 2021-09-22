@@ -3,12 +3,27 @@
 #include <stdlib.h>
 
 #define __swap SWAP_POINTER
+#define OBJ_POOL_BLOCK_SIZE 4096
+#define PTR_SIZE 8
+#define PTR_MASK (PTR_SIZE-1)
 
 typedef struct sorted_array{
     array array;
     compare cmp;
 }sorted_array;
 
+typedef struct stack{
+    unsigned i,n;
+    void*a[];
+}stack;
+
+typedef struct obj_pool{
+    stack*stack;
+    void**a;
+    unsigned i,n;
+    unsigned sz;
+    unsigned block_sz;
+}obj_pool;
 /* private APIs */
 #define __p (&o->fixed_array[0])
 static void array_try_expand(array*o){
@@ -136,7 +151,94 @@ void*sorted_array_erase(sorted_array*o,void*e){
     }
     o->array.i--;
     array_try_shrink(&o->array);
-    return e;
+    return __a(o->array.i);
+}
+
+stack*stack_new(unsigned init_capacity){
+    stack*o= malloc(sizeof(*o)+init_capacity*sizeof(void*));
+    o->i=0;
+    o->n=init_capacity;
+    return o;
+}
+
+void stack_release(stack*o){
+    free(o);
+}
+
+stack*stack_push(stack*o,void*e){
+    if(o->i==o->n){
+        o->n+=o->n/2+1;
+        o= realloc(o,sizeof(*o)+o->n*sizeof(void*));
+    }
+    o->a[o->i++]=e;
+    return o;
+}
+
+void*stack_pop(stack*o){
+    if(o->i){
+        return o->a[--o->i];
+    }
+    return 0;
+}
+
+void*stack_top(stack*o){
+    if(o->i){
+        return o->a[o->i-1];
+    }
+    return 0;
+}
+
+obj_pool*obj_pool_new(unsigned obj_sz,unsigned n_objs){
+    obj_pool*o= malloc(sizeof(*o));
+    o->stack= stack_new(16);
+    o->i=0;
+    o->n=n_objs?:16;
+    o->sz=PTR_SIZE+((obj_sz&PTR_MASK)?(obj_sz&~PTR_MASK)+PTR_SIZE:obj_sz);
+    o->block_sz=o->sz>OBJ_POOL_BLOCK_SIZE?o->sz:OBJ_POOL_BLOCK_SIZE;
+    unsigned i,n=o->n/(o->block_sz/o->sz)+1;
+    o->a= malloc((n+1)*sizeof(void*));
+    for(i=0;i<=n;i++)
+        o->a[i]=0;
+    return o;
+}
+
+void obj_pool_release(obj_pool*o){
+    unsigned i;
+    for(i=0;o->a[i];i++)
+        free(o->a[i]);
+    free(o->a);
+    stack_release(o->stack);
+    free(o);
+}
+
+void obj_pool_put(obj_pool*o,void*e){
+    long*p=e-1;
+    if(*p==-1){
+        free(p);
+    }else{
+        o->stack= stack_push(o->stack,e);
+    }
+}
+
+void*obj_pool_get(obj_pool*o){
+    void*e;
+    if((e= stack_pop(o->stack))){
+        return e;
+    }
+    if(o->i<o->n){
+        unsigned i,j;
+        i=o->i/(o->block_sz/o->sz);
+        j=o->i%(o->block_sz/o->sz);
+        if(!j){
+            o->a[i]= malloc(o->block_sz);
+        }
+        e=(char*)o->a[i]+j*o->sz;
+        *(unsigned long*)e=o->i++;
+        return e+1;
+    }
+    e= malloc(o->sz);
+    *(long*)e=-1;
+    return e+1;
 }
 
 #undef __a
