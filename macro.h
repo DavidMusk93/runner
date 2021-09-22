@@ -12,3 +12,4 @@
 
 #define __attr(...) __attribute__((__VA_ARGS__))
 #define __scoped_guard(fn) __attr(__cleanup__(fn))
+#define __deprecated __attr(deprecated,unused)

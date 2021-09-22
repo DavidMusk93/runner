@@ -411,7 +411,7 @@ int defer_runner_post(defer_runner*o,void(*fn)(void*),void*arg,unsigned duration
         }
         {
             LOCK_GUARD(o->mutex2);
-            sorted_array_put(o->array,t);
+            sorted_array_insert(o->array,t);
         }
         event_fd_notify(o->base.fd,EVENT_MSG);
         return t->id;

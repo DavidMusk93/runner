@@ -24,7 +24,7 @@ void array_rewind(array*o);
 
 sorted_array*sorted_array_new(compare cmp);
 void sorted_array_release(sorted_array*o);
-void sorted_array_put(sorted_array*o,void*e);
+void sorted_array_insert(sorted_array*o,void*e);
 void*sorted_array_erase(sorted_array*o,void*e);
 
 stack*stack_new(unsigned init_capacity);

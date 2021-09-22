@@ -1,6 +1,9 @@
 #include "array.h"
 
 #include <stdlib.h>
+#include <string.h>
+
+#include "macro.h"
 
 #define __swap SWAP_POINTER
 #define OBJ_POOL_BLOCK_SIZE 4096
@@ -58,7 +61,7 @@ static void array_try_shrink(array*o){
     }
 }
 
-static int array_search(array*o,void*e,compare cmp){
+static __deprecated int array_search(array*o,void*e,compare cmp){
 #define __m(i,j) ((i)+((j)-(i))/2)
     unsigned i,j,m; /*(i,j]*/
     int x;
@@ -78,7 +81,45 @@ static int array_search(array*o,void*e,compare cmp){
         }
     }
     return -1;
+}
+
+static unsigned array_search2(array*o,void*e,compare cmp,int*success){
+    unsigned i,j,m; /*(i,j)*/
+    int x;
+    if(success)
+        *success=0;
+    if(!o->i||cmp(e,o->a[0])<0){
+        return 0;
+    }
+    if(cmp(e,o->a[o->i-1])>0){
+        return o->i;
+    }
+    for(i=0,j=(int)o->i-1,m= __m(i,j);;m= __m(i,j)){
+        if(i>j){
+            return i;
+        }
+        x=cmp(e,o->a[i]);
+        if(x==0){
+            break;
+        }else if(x<0){
+            j=m-1;
+        }else{
+            i=m+1;
+        }
+    }
+    if(success)
+        *success=1;
+    return i;
+}
 #undef __m
+
+static void array_step_move(array*o,unsigned from,unsigned to){
+    unsigned n=(o->i-from)* sizeof(void*);
+    if(from+1==to){
+        memmove(&o->a[to],&o->a[from],n);
+    }else if(from==to+1){
+        memcpy(&o->a[to],&o->a[from],n);
+    }
 }
 
 /* public APIs */
@@ -130,28 +171,50 @@ void sorted_array_release(sorted_array*o){
 }
 
 #define __a(i) o->array.a[i]
-void sorted_array_put(sorted_array*o,void*e){
-    unsigned i=o->array.i;
-    array_push(&o->array,e);
-    /* bubble sort */
-    for(;i>0;i--){
-        if(o->cmp(__a(i),__a(i-1))>=0)
-            break;
-        __swap(__a(i),__a(i-1));
+#define __i o->array.i
+void sorted_array_insert(sorted_array*o,void*e){
+    int success;
+    unsigned i= array_search2(&o->array,e,o->cmp,&success);
+    if(success)
+        return; /*already exist*/
+    array_try_expand(&o->array);
+    if(!__i||i==__i){
+        __a(__i)=e;
+    }else{
+        array_step_move(&o->array,i,i+1);
+        __a(i)=e;
     }
+    __i++;
+//    unsigned i=o->array.i;
+//    array_push(&o->array,e);
+//    /* bubble sort */
+//    for(;i>0;i--){
+//        if(o->cmp(__a(i),__a(i-1))>=0)
+//            break;
+//        __swap(__a(i),__a(i-1));
+//    }
 }
 
 void*sorted_array_erase(sorted_array*o,void*e){
-    unsigned n,i=array_search(&o->array,e,o->cmp);
-    if(i>>31)
-        return 0;
-    n=o->array.i;
-    for(;i+1<n;i++){
-        __swap(__a(i),__a(i+1));
+    int success;
+    unsigned i= array_search2(&o->array,e,o->cmp,&success);
+    if(!success)
+        return 0; /*not exist*/
+    if(__i==1||i+1==__i){
+        return array_pop(&o->array);
     }
+    e= __a(i);
+    array_step_move(&o->array,i+1,i);
+//    unsigned n,i=array_search(&o->array,e,o->cmp);
+//    if(i>>31)
+//        return 0;
+//    n=o->array.i;
+//    for(;i+1<n;i++){
+//        __swap(__a(i),__a(i+1));
+//    }
     o->array.i--;
     array_try_shrink(&o->array);
-    return __a(o->array.i);
+    return e;
 }
 
 stack*stack_new(unsigned init_capacity){
@@ -241,6 +304,7 @@ void*obj_pool_get(obj_pool*o){
     return e+1;
 }
 
+#undef __i
 #undef __a
 #undef __p
 #undef __swap
