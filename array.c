@@ -94,7 +94,7 @@ static unsigned array_search2(array*o,void*e,compare cmp,int*success){
     if(cmp(e,o->a[o->i-1])>0){
         return o->i;
     }
-    for(i=0,j=(int)o->i-1,m= __m(i,j);;m= __m(i,j)){
+    for(i=0,j=o->i-1,m= __m(i,j);;m= __m(i,j)){
         if(i>j){
             return i;
         }

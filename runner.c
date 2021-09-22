@@ -403,15 +403,33 @@ int defer_runner_post(defer_runner*o,void(*fn)(void*),void*arg,unsigned duration
         t->repeated=repeated!=0;
         t->run_at=__ms()+t->duration;
         {
-            LOCK_GUARD(o->mutex);
-            heap_push(o->tasks,t);
-            if(o->id==RUNNER_ID_MAX)
-                o->id=RUNNER_ID_MIN;
-            t->id=o->id++;
+            LOCK_GUARD(o->mutex2);
+            if(o->id==RUNNER_ID_MAX){ /*slow id alloc*/
+                array*p=(array*)o->array;
+                if(!p->i){
+                    o->id=RUNNER_ID_MIN; /*switch to fast version*/
+                    t->id=o->id++;
+                }else{
+                    unsigned i,avail=RUNNER_ID_MIN;
+                    defer_task*x;
+                    for(i=0;i<p->i;i++){
+                        x=p->a[i];
+                        if(avail!=x->id){
+                            break;
+                        }
+                        avail++;
+                    }
+                    /* TODO how about avail reach to ID_MAX? */
+                    t->id=(int)avail;
+                }
+            }else{ /*fast id alloc*/
+                t->id=o->id++;
+            }
+            sorted_array_insert(o->array,t);
         }
         {
-            LOCK_GUARD(o->mutex2);
-            sorted_array_insert(o->array,t);
+            LOCK_GUARD(o->mutex);
+            heap_push(o->tasks,t);
         }
         event_fd_notify(o->base.fd,EVENT_MSG);
         return t->id;

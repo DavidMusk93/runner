@@ -6,7 +6,7 @@
 # define ARRAY_FIXED_SIZE 4096
 #endif
 
-typedef struct{
+typedef struct array{
     void*fixed_array[ARRAY_FIXED_SIZE];
     void**a;
     unsigned i,n;
