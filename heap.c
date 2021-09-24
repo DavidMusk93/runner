@@ -56,8 +56,7 @@ static void __down(struct heap*o,unsigned i){
 
 void heap_push(struct heap*o,void*x){
     if(o->i==o->n){
-        o->n*=2;
-        o->a= realloc(o->a,o->n);
+        o->a= realloc(o->a,NEXT_ALLOC(o->n));
     }
     o->a[o->i]=x;
     __up(o,o->i++);

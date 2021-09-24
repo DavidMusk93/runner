@@ -32,15 +32,14 @@ typedef struct obj_pool{
 static void array_try_expand(array*o){
     if(o->i<o->n)
         return;
-    unsigned i;
+    unsigned i,n=o->n;
     void**a=__p;
-    o->a=realloc(o->a==a?0:o->a,o->n*2);
-    if(o->n==ARRAY_FIXED_SIZE){
+    o->a=realloc(o->a==a?0:o->a, NEXT_ALLOC(o->n));
+    if(n==ARRAY_FIXED_SIZE){
         for(i=0;i<ARRAY_FIXED_SIZE;i++){
             o->a[i]=a[i];
         }
     }
-    o->n*=2;
 }
 
 static void array_try_shrink(array*o){
@@ -218,6 +217,7 @@ void*sorted_array_erase(sorted_array*o,void*e){
 }
 
 stack*stack_new(unsigned init_capacity){
+    AT_LEAST(init_capacity,16);
     stack*o= malloc(sizeof(*o)+init_capacity*sizeof(void*));
     o->i=0;
     o->n=init_capacity;
@@ -230,8 +230,7 @@ void stack_release(stack*o){
 
 stack*stack_push(stack*o,void*e){
     if(o->i==o->n){
-        o->n+=o->n/2+1;
-        o= realloc(o,sizeof(*o)+o->n*sizeof(void*));
+        o= realloc(o,sizeof(*o)+ NEXT_ALLOC(o->n)*sizeof(void*));
     }
     o->a[o->i++]=e;
     return o;
