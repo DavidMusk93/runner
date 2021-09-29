@@ -1,4 +1,5 @@
 # task_runner
+
 A simple task runner.
 
 ## what is a (defer)task?
@@ -27,12 +28,13 @@ typedef struct{
 ```
 
 `task` may be waitable, it could be blocked by
+
 * give up its cpu;
 * wait on the `runner`'s event fd.
 
 `defer_task` is cancelable, which is marked by its raw pointer.
 
-`task` is postted as `runner`'s queue entry, `defer_task` is organized as heap(minimal) entry in `defer_runner`. 
+`task` is postted as `runner`'s queue entry, `defer_task` is organized as heap(minimal) entry in `defer_runner`.
 
 ## what is a (defer)runner?
 
