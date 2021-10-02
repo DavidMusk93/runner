@@ -57,7 +57,7 @@ static void __down(heap *o, unsigned i) {
 
 void heap_push(heap *o, void *x) {
     if (o->i == o->n) {
-        o->a = realloc(o->a, NEXT_ALLOC(o->n));
+        o->a = realloc(o->a, NEXT_ALLOC(o->n) * sizeof(void *));
     }
     o->a[o->i] = x;
     __up(o, o->i++);

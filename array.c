@@ -35,7 +35,7 @@ static void array_try_expand(array *o) {
         return;
     unsigned i, n = o->n;
     void **a = __p;
-    o->a = realloc(o->a == a ? 0 : o->a, NEXT_ALLOC(o->n));
+    o->a = realloc(o->a == a ? 0 : o->a, NEXT_ALLOC(o->n) * sizeof(void *));
     if (n == ARRAY_FIXED_SIZE) {
         for (i = 0; i < ARRAY_FIXED_SIZE; i++) {
             o->a[i] = a[i];
@@ -56,7 +56,7 @@ static void array_try_shrink(array *o) {
             o->n = ARRAY_FIXED_SIZE;
         } else {
             o->n = o->n / 3 * 2;
-            o->a = realloc(o->a, o->n);
+            o->a = realloc(o->a, o->n * sizeof(void *));
         }
     }
 }
