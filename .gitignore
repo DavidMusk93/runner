@@ -12,4 +12,4 @@ _deps
 a.out
 cmake-build*
 .idea
-
+build

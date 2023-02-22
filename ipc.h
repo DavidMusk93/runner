@@ -1,10 +1,10 @@
 #pragma once
 
 enum {
-#define __event(t, x) EVENT_##t=x
-    __event(MSG, 1UL),
-    __event(TASK, 1UL << 31),
-    __event(QUIT, 1UL << 63),
+#define __event(t, x) EVENT_##t = x
+  __event(MSG, 1UL),
+  __event(TASK, 1UL << 31),
+  __event(QUIT, 1UL << 63),
 #undef __event
 };
 
